@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-HK">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Exam Revision Planner 溫書計劃表</title>
+<meta name="description" content="輸入考試日期同每科弱點,自動排每日溫邊課。免費、免登入、無伺服器。Plan your revision: weakest topics first, spread across the days left.">
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; background: #ffffff; color: #111111;
+  font-family: -apple-system, "PingFang HK", "Microsoft JhengHei", "Helvetica Neue", Arial, sans-serif;
+  font-size: 16px; line-height: 1.6; }
+.wrap { max-width: 720px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 22px; margin: 8px 0 4px; }
+.sub { color: #555; margin: 0 0 12px; }
+h2 { font-size: 17px; margin: 20px 0 6px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
+h3 { font-size: 16px; margin: 14px 0 4px; }
+label { display: block; font-size: 14px; color: #333; margin: 10px 0 2px; }
+input, select { font-size: 16px; padding: 9px 10px; border: 1px solid #999;
+  border-radius: 8px; background: #fff; color: #111; font-family: inherit; }
+input { width: 100%; }
+input[type=date] { width: 100%; }
+input[type=checkbox] { width: 20px; height: 20px; }
+button { font-size: 16px; padding: 10px 16px; border-radius: 8px;
+  border: 1px solid #111; background: #111; color: #fff; cursor: pointer;
+  margin: 8px 6px 8px 0; }
+button.ghost { background: #fff; color: #111; }
+button.small { padding: 6px 10px; font-size: 14px; margin: 0; }
+.row { display: flex; gap: 10px; }
+.row > div { flex: 1; min-width: 0; }
+.topic-row { display: flex; gap: 8px; margin: 6px 0; align-items: center; }
+.topic-row input[type=text] { flex: 1; min-width: 0; }
+.topic-row select { width: 130px; }
+.subject { border: 1px solid #ddd; border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
+.day { border: 1px solid #ddd; border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
+.day.today { border-color: #111; }
+.day h3 { margin: 0 0 6px; }
+.day ul { margin: 4px 0; padding-left: 0; list-style: none; }
+.day li { margin: 6px 0; }
+.day li label { display: inline; font-size: 16px; margin: 0 0 0 6px; }
+.day li.done label { text-decoration: line-through; color: #777; }
+.tag { font-size: 13px; border-radius: 4px; padding: 1px 6px; margin-left: 6px; }
+.tag.weak { background: #fde8e8; color: #a00; }
+.tag.revisit { background: #fff8e1; color: #8a6d00; }
+.tag.review { background: #e8f5e9; color: #0a7d0a; }
+#progBar { height: 10px; background: #e0e0e0; border-radius: 5px; margin-top: 6px; overflow: hidden; }
+#progFill { height: 100%; background: #0a7d0a; width: 0%; }
+.big { font-size: 26px; font-weight: bold; margin: 4px 0; }
+.note { background: #fff8e1; border: 1px solid #ffe082; border-radius: 8px;
+  padding: 10px 12px; font-size: 14px; margin: 16px 0; }
+.foot { color: #777; font-size: 13px; margin: 24px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Exam Revision Planner <span style="font-size:15px;color:#555">溫書計劃表</span></h1>
+  <p class="sub">邊課最弱就排最先,分晒去考試前每日。免費、免登入、無伺服器。<br>
+  <strong>科目比重、週末時數、超量警告、匯出齊晒。</strong> Weights, weekend hours, over-capacity warning &amp; export included.</p>
+
+  <h2>考試設定 Exam setup</h2>
+  <div class="row">
+    <div><label>考試日期 Exam date</label><input type="date" id="examDate"></div>
+    <div><label>每日溫幾多小時 Hours per day</label><input type="text" id="hoursDay" value="2"></div>
+    <div><label>週末每日小時 Weekend hours / day</label><input type="text" id="hoursWeekend" value="3"></div>
+  </div>
+  <p id="countdown" style="font-size:15px;color:#555"></p>
+  <div class="note" id="warnBox" style="display:none"></div>
+
+  <h2>科目同課題 Subjects &amp; topics</h2>
+  <div id="subjects"></div>
+  <button id="addSubject">+ 加一科 Add subject</button>
+  <button id="loadSample" class="ghost">載入範例 Load sample</button>
+
+  <div>
+    <button id="genPlan">生成計劃 Generate plan</button>
+    <button id="exportCsv" class="ghost">匯出 CSV Export CSV</button>
+    <button id="printPlan" class="ghost">列印 Print</button>
+  </div>
+
+  <h2>進度 Progress</h2>
+  <p id="progText" style="margin:4px 0">未生成計劃 — No plan yet.</p>
+  <div id="progBar"><div id="progFill"></div></div>
+
+  <h2>每日計劃 Day-by-day plan</h2>
+  <div id="planOut"><p style="color:#555">撳「生成計劃」就會出每日溫邊課。Press Generate plan.</p></div>
+
+  <div class="note">呢個表只係幫你排時間,唔會教你內容,亦唔保證成績。信心評分係你自己
+  嘅判斷,計劃有幾好就取決於評得有幾準。進度儲喺呢部瀏覽器,唔會上傳。<br>
+  This schedules your time only — it does not teach content or guarantee a
+  grade. Progress is stored in this browser only, never uploaded.</div>
+  <p class="foot">Exam Revision Planner — 開放原始碼 (MIT)。純 HTML/CSS/ES5,零外部資源。</p>
+</div>
+<script>
+/* Exam Revision Planner — skeleton. ES5 only, iOS 16 Safari safe. */
+var STORE_KEY = "exam-revision-planner-v1";
+var DAY_MS = 24 * 60 * 60 * 1000;
+var CONF_LABEL = { 1: "1 — 唔識 Weak", 2: "2 — 一半半 Shaky", 3: "3 — 識 Solid" };
+
+function el(id) { return document.getElementById(id); }
+function num(v, fallback) { var n = parseFloat(v); return isNaN(n) ? fallback : n; }
+function esc(s) {
+  return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function parseDate(str) {
+  var p = String(str || "").split("-");
+  if (p.length !== 3) return null;
+  var d = new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10));
+  return isNaN(d.getTime()) ? null : d;
+}
+function fmtDate(d) {
+  var m = d.getMonth() + 1, day = d.getDate();
+  var wd = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()];
+  return wd + " " + d.getFullYear() + "-" + (m < 10 ? "0" + m : m) + "-" + (day < 10 ? "0" + day : day);
+}
+function daysUntil(exam) {
+  var today = new Date(); today.setHours(0, 0, 0, 0);
+  var e = new Date(exam.getTime()); e.setHours(0, 0, 0, 0);
+  return Math.round((e.getTime() - today.getTime()) / DAY_MS);
+}
+/* Pure: build the plan. topics: [{subject, topic, conf}].
+   Returns array of days: [{date, items: [{key, subject, topic, kind}]}].
+   kind: "first" | "revisit" (weak topics get a 2nd pass) | "review" (last day). */
+function buildPlan(topics, examDate, hoursPerDay, hoursWeekend) {
+  var daysLeft = daysUntil(examDate);
+  if (daysLeft < 1) daysLeft = 1;
+  var sorted = topics.slice().sort(function (a, b) {
+    if (a.conf !== b.conf) return a.conf - b.conf;
+    var wa = a.weight || 1, wb = b.weight || 1;
+    if (wa !== wb) return wb - wa;
+    if (a.subject !== b.subject) return a.subject < b.subject ? -1 : 1;
+    return a.topic < b.topic ? -1 : 1;
+  });
+  /* ~30 min per topic-session; weekends use weekend hours (Sat/Sun). */
+  function capFor(day) {
+    var wd = day.getDay(), h = (wd === 0 || wd === 6) ? (hoursWeekend == null ? hoursPerDay : hoursWeekend) : hoursPerDay;
+    return Math.max(1, Math.floor(h * 2));
+  }
+  var days = [], i, d = new Date();
+  d.setHours(0, 0, 0, 0);
+  for (i = 0; i < daysLeft; i++) {
+    var day = new Date(d.getTime() + i * DAY_MS);
+    days.push({ date: day, items: [], cap: capFor(day) });
+  }
+  var dayIdx = 0;
+  function place(item) {
+    var tries = 0;
+    while (days[dayIdx].items.length >= days[dayIdx].cap && tries < days.length) {
+      dayIdx = (dayIdx + 1) % days.length; tries++;
+    }
+    days[dayIdx].items.push(item);
+    dayIdx = (dayIdx + 1) % days.length;
+  }
+  for (i = 0; i < sorted.length; i++) {
+    place({ key: sorted[i].subject + "||" + sorted[i].topic + "||1",
+      subject: sorted[i].subject, topic: sorted[i].topic, kind: "first", conf: sorted[i].conf });
+  }
+  /* Revisit for weak topics: place after the first pass, not on the last day if avoidable. */
+  for (i = 0; i < sorted.length; i++) {
+    if (sorted[i].conf === 1 && days.length > 1) {
+      place({ key: sorted[i].subject + "||" + sorted[i].topic + "||2",
+        subject: sorted[i].subject, topic: sorted[i].topic, kind: "revisit", conf: 1 });
+    }
+  }
+  /* Last day: mark everything on it as light review. */
+  var last = days[days.length - 1];
+  for (i = 0; i < last.items.length; i++) last.items[i].kind = "review";
+  return days;
+}
+/* Over-capacity check: sessions vs total daily capacity. Pure, testable. */
+function capacityWarning(sessions, days, hoursPerDay, hoursWeekend) {
+  var totalCap = 0, i, d = new Date(); d.setHours(0, 0, 0, 0);
+  for (i = 0; i < days; i++) {
+    var day = new Date(d.getTime() + i * DAY_MS), wd = day.getDay();
+    var h = (wd === 0 || wd === 6) ? hoursWeekend : hoursPerDay;
+    totalCap += Math.max(1, Math.floor(h * 2));
+  }
+  var mins = totalCap ? Math.floor((totalCap * 30) / sessions) : 0;
+  return { sessions: sessions, capacity: totalCap, over: sessions > totalCap, minsPerSession: mins };
+}
+function planToCSV(days) {
+  var out = ["Date,Subject,Topic,Kind"], i, j;
+  for (i = 0; i < days.length; i++) {
+    for (j = 0; j < days[i].items.length; j++) {
+      var it = days[i].items[j];
+      out.push([fmtDate(days[i].date), it.subject, it.topic, it.kind].join(","));
+    }
+  }
+  return out.join("\n");
+}
+function downloadFile(name, text, type) {
+  var blob, a;
+  try {
+    blob = new Blob([text], { type: type || "text/plain;charset=utf-8" });
+    a = document.createElement("a");
+    a.href = window.URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { window.URL.revokeObjectURL(a.href); }, 1000);
+  } catch (e) { alert("匯出失敗 Export failed: " + e.message); }
+}
+function loadDone() {
+  try {
+    var raw = window.localStorage.getItem(STORE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch (e) { return {}; }
+}
+function saveDone(done) {
+  try { window.localStorage.setItem(STORE_KEY, JSON.stringify(done)); } catch (e) {}
+}
+
+function addSubject(name) {
+  var div = document.createElement("div");
+  div.className = "subject";
+  div.innerHTML = '<div class="row"><div><label>科目 Subject</label>' +
+    '<input type="text" class="subj-name" value="' + esc(name || "") + '" placeholder="e.g. 數學 Maths"></div>' +
+    '<div style="flex:0 0 110px"><label>比重 Weight 1–5</label>' +
+    '<input type="text" class="subj-weight" value="1"></div>' +
+    '<div style="flex:0 0 auto"><label>&nbsp;</label><button class="small ghost del-subj">刪除科 ✕</button></div></div>' +
+    '<div class="topics"></div>' +
+    '<button class="small add-topic">+ 加一課 Add topic</button>';
+  div.getElementsByClassName("del-subj")[0].addEventListener("click", function () {
+    div.parentNode.removeChild(div); updateCountdown();
+  }, false);
+  div.getElementsByClassName("add-topic")[0].addEventListener("click", function () {
+    addTopic(div, "", 1);
+  }, false);
+  el("subjects").appendChild(div);
+  return div;
+}
+function addTopic(subjDiv, topic, conf) {
+  var row = document.createElement("div");
+  row.className = "topic-row";
+  row.innerHTML = '<input type="text" value="' + esc(topic || "") + '" placeholder="課題 e.g. 三角函數">' +
+    '<select><option value="1">1 — 唔識</option><option value="2">2 — 一半半</option>' +
+    '<option value="3">3 — 識</option></select>' +
+    '<button class="small ghost">✕</button>';
+  row.getElementsByTagName("select")[0].value = String(conf || 1);
+  row.getElementsByTagName("button")[0].addEventListener("click", function () {
+    row.parentNode.removeChild(row);
+  }, false);
+  subjDiv.getElementsByClassName("topics")[0].appendChild(row);
+}
+function readTopics() {
+  var out = [], subs = el("subjects").getElementsByClassName("subject"), i, j;
+  for (i = 0; i < subs.length; i++) {
+    var name = subs[i].getElementsByClassName("subj-name")[0].value.replace(/^\s+|\s+$/g, "") || "未命名科目";
+    var weight = num(subs[i].getElementsByClassName("subj-weight")[0].value, 1);
+    if (weight < 1) weight = 1; if (weight > 5) weight = 5;
+    var rows = subs[i].getElementsByClassName("topic-row");
+    for (j = 0; j < rows.length; j++) {
+      var t = rows[j].getElementsByTagName("input")[0].value.replace(/^\s+|\s+$/g, "");
+      if (!t) continue;
+      out.push({ subject: name, topic: t, weight: weight,
+        conf: num(rows[j].getElementsByTagName("select")[0].value, 1) });
+    }
+  }
+  return out;
+}
+function updateCountdown() {
+  var exam = parseDate(el("examDate").value);
+  if (!exam) { el("countdown").textContent = ""; return; }
+  var left = daysUntil(exam);
+  el("countdown").textContent = left < 0 ? "考試日已過 — Exam date has passed."
+    : left === 0 ? "今日就係考試日! Exam is today — light review only."
+    : "仲有 " + left + " 日 — " + left + " day(s) to the exam.";
+}
+function renderPlan() {
+  var topics = readTopics();
+  var exam = parseDate(el("examDate").value);
+  var hours = num(el("hoursDay").value, 2);
+  var hoursWk = num(el("hoursWeekend").value, hours);
+  if (!exam) { alert("請先揀考試日期。Pick an exam date first."); return; }
+  if (!topics.length) { alert("請加最少一個課題。Add at least one topic."); return; }
+  var days = buildPlan(topics, exam, hours, hoursWk);
+  window._lastPlan = days;
+  var sessions = 0, di;
+  for (di = 0; di < days.length; di++) sessions += days[di].items.length;
+  var warn = capacityWarning(sessions, days.length, hours, hoursWk);
+  var wb = el("warnBox");
+  if (warn.over) {
+    wb.style.display = "block";
+    wb.innerHTML = "<strong>⚠ 排唔晒 / 溫唔切 Over capacity:</strong> " + sessions + " 個溫習項目,得 " +
+      days.length + " 日、每日容量合共 " + warn.capacity + " 個項目,平均每個項目得 " + warn.minsPerSession +
+      " 分鐘。請減範圍、加每日時數,或者將部分弱項留待重溫。";
+  } else {
+    wb.style.display = "block";
+    wb.innerHTML = "容量 OK: " + sessions + " 個項目 / " + warn.capacity + " 個容量,平均每個項目約 " +
+      warn.minsPerSession + " 分鐘。";
+  }
+  var done = loadDone(), total = 0, ticked = 0, i, j, h = "";
+  for (i = 0; i < days.length; i++) {
+    var isToday = i === 0;
+    h += '<div class="day' + (isToday ? " today" : "") + '"><h3>' + fmtDate(days[i].date) +
+      (isToday ? " — 今日 Today" : "") + (i === days.length - 1 ? " — 考前最後一日 (輕溫習)" : "") + "</h3>";
+    if (!days[i].items.length) { h += "<p style='color:#777'>休息 / 緩衝日 — rest or catch-up.</p>"; }
+    h += "<ul>";
+    for (j = 0; j < days[i].items.length; j++) {
+      var it = days[i].items[j], key = it.key;
+      total++;
+      var isDone = !!done[key];
+      if (isDone) ticked++;
+      var tag = it.kind === "revisit" ? '<span class="tag revisit">重溫 Revisit</span>'
+        : it.kind === "review" ? '<span class="tag review">輕溫習 Review</span>'
+        : (it.conf === 1 ? '<span class="tag weak">弱項 Weak</span>' : "");
+      h += '<li class="' + (isDone ? "done" : "") + '"><input type="checkbox" data-key="' +
+        esc(key) + '"' + (isDone ? " checked" : "") + '><label>' + esc(it.subject) + " — " +
+        esc(it.topic) + "</label>" + tag + "</li>";
+    }
+    h += "</ul></div>";
+  }
+  el("planOut").innerHTML = h;
+  var boxes = el("planOut").getElementsByTagName("input");
+  for (i = 0; i < boxes.length; i++) {
+    boxes[i].addEventListener("change", function () {
+      var d2 = loadDone();
+      if (this.checked) d2[this.getAttribute("data-key")] = 1; else delete d2[this.getAttribute("data-key")];
+      saveDone(d2);
+      this.parentNode.className = this.checked ? "done" : "";
+      updateProgress();
+    }, false);
+  }
+  updateProgress();
+}
+function updateProgress() {
+  var boxes = el("planOut").getElementsByTagName("input"), total = boxes.length, ticked = 0, i;
+  for (i = 0; i < total; i++) if (boxes[i].checked) ticked++;
+  if (!total) { el("progText").textContent = "未生成計劃 — No plan yet."; el("progFill").style.width = "0%"; return; }
+  el("progText").textContent = "已完成 " + ticked + " / " + total + " 個溫習項目 — " + ticked + " of " + total + " sessions done.";
+  el("progFill").style.width = String(Math.round(ticked / total * 100)) + "%";
+}
+el("addSubject").addEventListener("click", function () { addSubject(""); }, false);
+el("loadSample").addEventListener("click", function () {
+  el("subjects").innerHTML = "";
+  var s1 = addSubject("數學 Maths");
+  addTopic(s1, "三角函數 Trigonometry", 1); addTopic(s1, "微積分 Calculus", 2); addTopic(s1, "概率 Probability", 1);
+  var s2 = addSubject("英文 English");
+  addTopic(s2, "作文 Writing", 2); addTopic(s2, "閱讀理解 Reading", 3); addTopic(s2, "聆聽 Listening", 2);
+  updateCountdown();
+}, false);
+el("genPlan").addEventListener("click", renderPlan, false);
+el("exportCsv").addEventListener("click", function () {
+  if (!window._lastPlan) { alert("請先生成計劃。Generate the plan first."); return; }
+  downloadFile("revision-plan.csv", planToCSV(window._lastPlan), "text/csv;charset=utf-8");
+}, false);
+el("printPlan").addEventListener("click", function () { window.print(); }, false);
+el("examDate").addEventListener("change", updateCountdown, false);
+(function () {
+  var d = new Date(Date.now() + 14 * DAY_MS);
+  var m = d.getMonth() + 1, day = d.getDate();
+  el("examDate").value = d.getFullYear() + "-" + (m < 10 ? "0" + m : m) + "-" + (day < 10 ? "0" + day : day);
+  var s1 = addSubject("數學 Maths");
+  addTopic(s1, "三角函數 Trigonometry", 1); addTopic(s1, "微積分 Calculus", 2);
+  var s2 = addSubject("英文 English");
+  addTopic(s2, "作文 Writing", 2); addTopic(s2, "閱讀理解 Reading", 3);
+  updateCountdown();
+})();
+</script>
+</body>
+</html>
