@@ -55,7 +55,7 @@ button.small { padding: 6px 10px; font-size: 14px; margin: 0; }
 <div class="wrap">
   <h1>Exam Revision Planner <span style="font-size:15px;color:#555">溫書計劃表</span></h1>
   <p class="sub">邊課最弱就排最先,分晒去考試前每日。免費、免登入、無伺服器。<br>
-  <strong>科目比重、週末時數、超量警告、匯出齊晒。</strong> Weights, weekend hours, over-capacity warning &amp; export included.</p>
+  <strong>科目比重、週末時數、每課預計分鐘、超量警告、進度條、連續溫習日數、匯出齊晒。</strong> Weights, weekend hours, per-topic minutes, over-capacity warning, progress bars, study streak &amp; export included.</p>
 
   <h2>考試設定 Exam setup</h2>
   <div class="row">
@@ -74,12 +74,17 @@ button.small { padding: 6px 10px; font-size: 14px; margin: 0; }
   <div>
     <button id="genPlan">生成計劃 Generate plan</button>
     <button id="exportCsv" class="ghost">匯出 CSV Export CSV</button>
+    <button id="exportTxt" class="ghost">匯出文字報告 Export report (.txt)</button>
     <button id="printPlan" class="ghost">列印 Print</button>
+    <button id="resetProg" class="ghost">重設進度 Reset progress</button>
   </div>
 
   <h2>進度 Progress</h2>
+  <p id="streakBox" style="margin:4px 0;font-weight:bold">今日未開始 — tick off a session to start your streak.</p>
   <p id="progText" style="margin:4px 0">未生成計劃 — No plan yet.</p>
   <div id="progBar"><div id="progFill"></div></div>
+  <h3>各科進度 Progress by subject</h3>
+  <div id="subjProg"><p style="color:#555">未生成計劃 — No plan yet.</p></div>
 
   <h2>每日計劃 Day-by-day plan</h2>
   <div id="planOut"><p style="color:#555">撳「生成計劃」就會出每日溫邊課。Press Generate plan.</p></div>
@@ -103,10 +108,15 @@ function esc(s) {
     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 function parseDate(str) {
-  var p = String(str || "").split("-");
-  if (p.length !== 3) return null;
-  var d = new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10));
-  return isNaN(d.getTime()) ? null : d;
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(str || ""));
+  if (!m) return null;
+  var y = parseInt(m[1], 10), mo = parseInt(m[2], 10), d = parseInt(m[3], 10);
+  var dt = new Date(y, mo - 1, d);
+  /* Reject impossible dates: new Date(2026, 1, 30) silently rolls over to
+     2026-03-02, so check the components round-trip. Also rejects
+     unpadded input ("2026-2-3") and trailing junk ("2026-11-10x"). */
+  if (isNaN(dt.getTime()) || dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return null;
+  return dt;
 }
 function fmtDate(d) {
   var m = d.getMonth() + 1, day = d.getDate();
@@ -118,9 +128,17 @@ function daysUntil(exam) {
   var e = new Date(exam.getTime()); e.setHours(0, 0, 0, 0);
   return Math.round((e.getTime() - today.getTime()) / DAY_MS);
 }
-/* Pure: build the plan. topics: [{subject, topic, conf}].
-   Returns array of days: [{date, items: [{key, subject, topic, kind}]}].
+/* Pure: build the plan. topics: [{subject, topic, conf, weight, minutes}].
+   Each topic takes minutes (default 30); a day's capacity is its hours in
+   minutes (weekends use weekend hours). Returns array of days:
+   [{date, items: [{key, subject, topic, kind, minutes}], capMin, usedMin}].
    kind: "first" | "revisit" (weak topics get a 2nd pass) | "review" (last day). */
+function topicMinutes(t) {
+  var m = num(t.minutes, 30);
+  if (isNaN(m) || m < 5) m = 5;
+  if (m > 240) m = 240;
+  return m;
+}
 function buildPlan(topics, examDate, hoursPerDay, hoursWeekend) {
   var daysLeft = daysUntil(examDate);
   if (daysLeft < 1) daysLeft = 1;
@@ -131,35 +149,71 @@ function buildPlan(topics, examDate, hoursPerDay, hoursWeekend) {
     if (a.subject !== b.subject) return a.subject < b.subject ? -1 : 1;
     return a.topic < b.topic ? -1 : 1;
   });
-  /* ~30 min per topic-session; weekends use weekend hours (Sat/Sun). */
+  /* Daily capacity in minutes; weekends use weekend hours (Sat/Sun). */
   function capFor(day) {
     var wd = day.getDay(), h = (wd === 0 || wd === 6) ? (hoursWeekend == null ? hoursPerDay : hoursWeekend) : hoursPerDay;
-    return Math.max(1, Math.floor(h * 2));
+    return Math.max(30, Math.floor(h * 60));
   }
   var days = [], i, d = new Date();
   d.setHours(0, 0, 0, 0);
   for (i = 0; i < daysLeft; i++) {
     var day = new Date(d.getTime() + i * DAY_MS);
-    days.push({ date: day, items: [], cap: capFor(day) });
+    days.push({ date: day, items: [], capMin: capFor(day), usedMin: 0 });
+  }
+  /* Item keys must be unique even for two identical topics in one subject
+     (e.g. "三角函數" twice): ticking one must not tick the other. The first
+     occurrence keeps the plain key "subject||topic||1"; later ones get #2, #3. */
+  var occMap = {};
+  function itemKey(t, pass) {
+    var b = t.subject + "||" + t.topic;
+    occMap[b] = (occMap[b] || 0) + 1;
+    var occ = occMap[b];
+    return b + "||" + pass + (occ > 1 ? "#" + occ : "");
   }
   var dayIdx = 0;
-  function place(item) {
-    var tries = 0;
-    while (days[dayIdx].items.length >= days[dayIdx].cap && tries < days.length) {
+  function place(item, mins) {
+    var tries = 0, start = dayIdx;
+    while (days[dayIdx].usedMin + mins > days[dayIdx].capMin && tries < days.length) {
       dayIdx = (dayIdx + 1) % days.length; tries++;
     }
+    if (tries >= days.length) {
+      /* Nothing fits anywhere: put it on the day with the most room left. */
+      var best = start, bestRoom = -1, k;
+      for (k = 0; k < days.length; k++) {
+        var room = days[k].capMin - days[k].usedMin;
+        if (room > bestRoom) { bestRoom = room; best = k; }
+      }
+      dayIdx = best;
+    }
     days[dayIdx].items.push(item);
+    days[dayIdx].usedMin += mins;
     dayIdx = (dayIdx + 1) % days.length;
   }
+  /* Longest single day's capacity: one topic longer than that can never
+     fit a day whole (e.g. a 60-min topic on 0.5 h/day), so split it into
+     chunks that fit, each with its own key so ticking one chunk does not
+     tick the others. Total minutes are preserved. */
+  var maxCap = 0;
+  for (i = 0; i < days.length; i++) if (days[i].capMin > maxCap) maxCap = days[i].capMin;
+  function placeTopic(t, pass, kind) {
+    var mins = topicMinutes(t), baseKey = itemKey(t, pass), remaining = mins, n = 0;
+    while (remaining > 0) {
+      var chunk = Math.min(remaining, maxCap);
+      n++;
+      place({ key: baseKey + (n > 1 ? "~" + n : ""),
+        subject: t.subject, topic: t.topic, kind: kind,
+        conf: t.conf, minutes: chunk }, chunk);
+      remaining -= chunk;
+    }
+  }
   for (i = 0; i < sorted.length; i++) {
-    place({ key: sorted[i].subject + "||" + sorted[i].topic + "||1",
-      subject: sorted[i].subject, topic: sorted[i].topic, kind: "first", conf: sorted[i].conf });
+    placeTopic(sorted[i], 1, "first");
   }
   /* Revisit for weak topics: place after the first pass, not on the last day if avoidable. */
+  occMap = {};
   for (i = 0; i < sorted.length; i++) {
     if (sorted[i].conf === 1 && days.length > 1) {
-      place({ key: sorted[i].subject + "||" + sorted[i].topic + "||2",
-        subject: sorted[i].subject, topic: sorted[i].topic, kind: "revisit", conf: 1 });
+      placeTopic(sorted[i], 2, "revisit");
     }
   }
   /* Last day: mark everything on it as light review. */
@@ -167,23 +221,93 @@ function buildPlan(topics, examDate, hoursPerDay, hoursWeekend) {
   for (i = 0; i < last.items.length; i++) last.items[i].kind = "review";
   return days;
 }
-/* Over-capacity check: sessions vs total daily capacity. Pure, testable. */
-function capacityWarning(sessions, days, hoursPerDay, hoursWeekend) {
+/* Over-capacity check, in minutes: total topic-minutes vs total daily capacity. Pure. */
+function capacityWarning(totalMinutes, days, hoursPerDay, hoursWeekend) {
   var totalCap = 0, i, d = new Date(); d.setHours(0, 0, 0, 0);
   for (i = 0; i < days; i++) {
     var day = new Date(d.getTime() + i * DAY_MS), wd = day.getDay();
     var h = (wd === 0 || wd === 6) ? hoursWeekend : hoursPerDay;
-    totalCap += Math.max(1, Math.floor(h * 2));
+    totalCap += Math.max(30, Math.floor(h * 60));
   }
-  var mins = totalCap ? Math.floor((totalCap * 30) / sessions) : 0;
-  return { sessions: sessions, capacity: totalCap, over: sessions > totalCap, minsPerSession: mins };
+  return { minutes: totalMinutes, capacity: totalCap, over: totalMinutes > totalCap,
+    spareMinutes: totalCap - totalMinutes };
+}
+/* Per-subject progress from a plan + done map. Returns [{subject, total, done, pct}]. */
+function subjectProgress(days, done) {
+  var order = [], map = {}, i, j, it;
+  for (i = 0; i < days.length; i++) {
+    for (j = 0; j < days[i].items.length; j++) {
+      it = days[i].items[j];
+      if (!map[it.subject]) { map[it.subject] = { subject: it.subject, total: 0, done: 0 }; order.push(it.subject); }
+      map[it.subject].total++;
+      if (done[it.key]) map[it.subject].done++;
+    }
+  }
+  var out = [];
+  for (i = 0; i < order.length; i++) {
+    var s = map[order[i]];
+    s.pct = s.total ? Math.round(s.done / s.total * 100) : 0;
+    out.push(s);
+  }
+  return out;
+}
+function fmtDayKey(d) {
+  var m = d.getMonth() + 1, day = d.getDate();
+  return d.getFullYear() + "-" + (m < 10 ? "0" + m : m) + "-" + (day < 10 ? "0" + day : day);
+}
+/* Consecutive-day study streak ending today (or yesterday if nothing done today).
+   dateStrs: ["YYYY-MM-DD", ...] with at least one ticked item. Pure. */
+function computeStreak(dateStrs, todayStr) {
+  var set = {}, i;
+  for (i = 0; i < dateStrs.length; i++) set[dateStrs[i]] = 1;
+  var today = parseDate(todayStr);
+  if (!today) return 0;
+  var cur = new Date(today.getTime());
+  if (!set[fmtDayKey(cur)]) cur = new Date(cur.getTime() - DAY_MS);
+  var streak = 0;
+  while (set[fmtDayKey(cur)]) { streak++; cur = new Date(cur.getTime() - DAY_MS); }
+  return streak;
+}
+/* Plain-text summary of the plan + progress, for the .txt export. Pure. */
+function planSummaryText(days, done, streak, examStr) {
+  var lines = [], i, j, total = 0, ticked = 0;
+  lines.push("Exam Revision Plan — 溫書計劃表");
+  lines.push("Exam date 考試日期: " + examStr);
+  lines.push("Study streak 連續溫習: " + streak + " day(s)");
+  lines.push("");
+  var prog = subjectProgress(days, done);
+  lines.push("Progress by subject 各科進度:");
+  for (i = 0; i < prog.length; i++) {
+    lines.push("- " + prog[i].subject + ": " + prog[i].done + "/" + prog[i].total + " (" + prog[i].pct + "%)");
+  }
+  lines.push("");
+  lines.push("Day-by-day 每日計劃:");
+  for (i = 0; i < days.length; i++) {
+    lines.push(fmtDate(days[i].date) + " (" + days[i].usedMin + "/" + days[i].capMin + " min):");
+    if (!days[i].items.length) lines.push("  (rest day 休息日)");
+    for (j = 0; j < days[i].items.length; j++) {
+      var it = days[i].items[j];
+      total++;
+      if (done[it.key]) ticked++;
+      lines.push("  [" + (done[it.key] ? "x" : " ") + "] " + it.subject + " — " + it.topic +
+        " (" + it.minutes + " min, " + it.kind + ")");
+    }
+  }
+  lines.push("");
+  lines.push("Total: " + ticked + "/" + total + " sessions done.");
+  return lines.join("\n");
+}
+function csvEscape(v) {
+  var s = String(v == null ? "" : v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
 }
 function planToCSV(days) {
-  var out = ["Date,Subject,Topic,Kind"], i, j;
+  var out = ["Date,Subject,Topic,Kind,Minutes"], i, j;
   for (i = 0; i < days.length; i++) {
     for (j = 0; j < days[i].items.length; j++) {
       var it = days[i].items[j];
-      out.push([fmtDate(days[i].date), it.subject, it.topic, it.kind].join(","));
+      out.push([csvEscape(fmtDate(days[i].date)), csvEscape(it.subject),
+        csvEscape(it.topic), csvEscape(it.kind), it.minutes].join(","));
     }
   }
   return out.join("\n");
@@ -209,6 +333,22 @@ function loadDone() {
 function saveDone(done) {
   try { window.localStorage.setItem(STORE_KEY, JSON.stringify(done)); } catch (e) {}
 }
+/* Dates (YYYY-MM-DD) on which at least one item was ticked — drives the streak. */
+var DATES_KEY = STORE_KEY + "-dates";
+function loadDoneDates() {
+  try {
+    var raw = window.localStorage.getItem(DATES_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch (e) { return {}; }
+}
+function saveDoneDates(dates) {
+  try { window.localStorage.setItem(DATES_KEY, JSON.stringify(dates)); } catch (e) {}
+}
+function currentStreak() {
+  var dates = loadDoneDates(), keys = [], k;
+  for (k in dates) keys.push(k);
+  return computeStreak(keys, fmtDayKey(new Date()));
+}
 
 function addSubject(name) {
   var div = document.createElement("div");
@@ -229,14 +369,18 @@ function addSubject(name) {
   el("subjects").appendChild(div);
   return div;
 }
-function addTopic(subjDiv, topic, conf) {
+function addTopic(subjDiv, topic, conf, minutes) {
   var row = document.createElement("div");
   row.className = "topic-row";
   row.innerHTML = '<input type="text" value="' + esc(topic || "") + '" placeholder="課題 e.g. 三角函數">' +
-    '<select><option value="1">1 — 唔識</option><option value="2">2 — 一半半</option>' +
+    '<select class="topic-conf"><option value="1">1 — 唔識</option><option value="2">2 — 一半半</option>' +
     '<option value="3">3 — 識</option></select>' +
+    '<select class="topic-mins" title="預計分鐘 Estimated minutes">' +
+    '<option value="15">15 分鐘</option><option value="30">30 分鐘</option>' +
+    '<option value="45">45 分鐘</option><option value="60">60 分鐘</option></select>' +
     '<button class="small ghost">✕</button>';
-  row.getElementsByTagName("select")[0].value = String(conf || 1);
+  row.getElementsByClassName("topic-conf")[0].value = String(conf || 1);
+  row.getElementsByClassName("topic-mins")[0].value = String(minutes || 30);
   row.getElementsByTagName("button")[0].addEventListener("click", function () {
     row.parentNode.removeChild(row);
   }, false);
@@ -252,8 +396,10 @@ function readTopics() {
     for (j = 0; j < rows.length; j++) {
       var t = rows[j].getElementsByTagName("input")[0].value.replace(/^\s+|\s+$/g, "");
       if (!t) continue;
+      var sels = rows[j].getElementsByTagName("select");
       out.push({ subject: name, topic: t, weight: weight,
-        conf: num(rows[j].getElementsByTagName("select")[0].value, 1) });
+        conf: num(sels[0].value, 1),
+        minutes: sels.length > 1 ? num(sels[1].value, 30) : 30 });
     }
   }
   return out;
@@ -272,28 +418,33 @@ function renderPlan() {
   var hours = num(el("hoursDay").value, 2);
   var hoursWk = num(el("hoursWeekend").value, hours);
   if (!exam) { alert("請先揀考試日期。Pick an exam date first."); return; }
+  if (daysUntil(exam) < 0) { alert("考試日已過 — 揀個將來嘅日期先排到計劃。Exam date has passed; pick a future date."); return; }
+  if (!(hours >= 0.5 && hours <= 16) || !(hoursWk >= 0.5 && hoursWk <= 16)) {
+    alert("每日時數請填 0.5 至 16 小時。Hours per day must be between 0.5 and 16."); return;
+  }
   if (!topics.length) { alert("請加最少一個課題。Add at least one topic."); return; }
   var days = buildPlan(topics, exam, hours, hoursWk);
   window._lastPlan = days;
-  var sessions = 0, di;
-  for (di = 0; di < days.length; di++) sessions += days[di].items.length;
-  var warn = capacityWarning(sessions, days.length, hours, hoursWk);
+  var sessions = 0, totalMins = 0, di;
+  for (di = 0; di < days.length; di++) { sessions += days[di].items.length; totalMins += days[di].usedMin; }
+  var warn = capacityWarning(totalMins, days.length, hours, hoursWk);
   var wb = el("warnBox");
   if (warn.over) {
     wb.style.display = "block";
-    wb.innerHTML = "<strong>⚠ 排唔晒 / 溫唔切 Over capacity:</strong> " + sessions + " 個溫習項目,得 " +
-      days.length + " 日、每日容量合共 " + warn.capacity + " 個項目,平均每個項目得 " + warn.minsPerSession +
-      " 分鐘。請減範圍、加每日時數,或者將部分弱項留待重溫。";
+    wb.innerHTML = "<strong>⚠ 排唔晒 / 溫唔切 Over capacity:</strong> " + sessions + " 個溫習項目合共 " +
+      totalMins + " 分鐘,得 " + days.length + " 日、容量合共 " + warn.capacity + " 分鐘,爭 " +
+      (-warn.spareMinutes) + " 分鐘。請減範圍、加每日時數,或者將部分弱項留待重溫。";
   } else {
     wb.style.display = "block";
-    wb.innerHTML = "容量 OK: " + sessions + " 個項目 / " + warn.capacity + " 個容量,平均每個項目約 " +
-      warn.minsPerSession + " 分鐘。";
+    wb.innerHTML = "容量 OK: " + sessions + " 個項目、" + totalMins + " 分鐘 / 容量 " + warn.capacity +
+      " 分鐘,仲有 " + warn.spareMinutes + " 分鐘緩衝。";
   }
   var done = loadDone(), total = 0, ticked = 0, i, j, h = "";
   for (i = 0; i < days.length; i++) {
     var isToday = i === 0;
     h += '<div class="day' + (isToday ? " today" : "") + '"><h3>' + fmtDate(days[i].date) +
-      (isToday ? " — 今日 Today" : "") + (i === days.length - 1 ? " — 考前最後一日 (輕溫習)" : "") + "</h3>";
+      (isToday ? " — 今日 Today" : "") + (i === days.length - 1 ? " — 考前最後一日 (輕溫習)" : "") +
+      ' <span style="font-weight:normal;color:#555;font-size:14px">(' + days[i].usedMin + "/" + days[i].capMin + ' 分鐘)</span></h3>';
     if (!days[i].items.length) { h += "<p style='color:#777'>休息 / 緩衝日 — rest or catch-up.</p>"; }
     h += "<ul>";
     for (j = 0; j < days[i].items.length; j++) {
@@ -306,7 +457,7 @@ function renderPlan() {
         : (it.conf === 1 ? '<span class="tag weak">弱項 Weak</span>' : "");
       h += '<li class="' + (isDone ? "done" : "") + '"><input type="checkbox" data-key="' +
         esc(key) + '"' + (isDone ? " checked" : "") + '><label>' + esc(it.subject) + " — " +
-        esc(it.topic) + "</label>" + tag + "</li>";
+        esc(it.topic) + " (" + it.minutes + " 分鐘)</label>" + tag + "</li>";
     }
     h += "</ul></div>";
   }
@@ -315,7 +466,24 @@ function renderPlan() {
   for (i = 0; i < boxes.length; i++) {
     boxes[i].addEventListener("change", function () {
       var d2 = loadDone();
-      if (this.checked) d2[this.getAttribute("data-key")] = 1; else delete d2[this.getAttribute("data-key")];
+      if (this.checked) {
+        d2[this.getAttribute("data-key")] = 1;
+        var dates = loadDoneDates();
+        dates[fmtDayKey(new Date())] = 1;
+        saveDoneDates(dates);
+      } else {
+        delete d2[this.getAttribute("data-key")];
+        /* Un-ticked everything: drop today from the streak dates, so the
+           streak does not survive a full clear. (Approximation: the streak
+           only tracks days, not which session was ticked.) */
+        var boxes2 = el("planOut").getElementsByTagName("input"), any = false, bi;
+        for (bi = 0; bi < boxes2.length; bi++) if (boxes2[bi].checked) { any = true; break; }
+        if (!any) {
+          var dates2 = loadDoneDates();
+          delete dates2[fmtDayKey(new Date())];
+          saveDoneDates(dates2);
+        }
+      }
       saveDone(d2);
       this.parentNode.className = this.checked ? "done" : "";
       updateProgress();
@@ -323,9 +491,30 @@ function renderPlan() {
   }
   updateProgress();
 }
+function renderSubjectProgress() {
+  var box = el("subjProg");
+  if (!box) return;
+  if (!window._lastPlan) { box.innerHTML = "<p style='color:#555'>未生成計劃 — No plan yet.</p>"; return; }
+  var prog = subjectProgress(window._lastPlan, loadDone()), h = "", i;
+  for (i = 0; i < prog.length; i++) {
+    h += '<p style="margin:6px 0"><strong>' + esc(prog[i].subject) + ":</strong> " +
+      prog[i].done + "/" + prog[i].total + " (" + prog[i].pct + "%)" +
+      '<span style="display:block;height:8px;background:#e0e0e0;border-radius:4px;overflow:hidden">' +
+      '<span style="display:block;height:100%;background:#0a7d0a;width:' + prog[i].pct + '%"></span></span></p>';
+  }
+  box.innerHTML = h || "<p style='color:#555'>未生成計劃 — No plan yet.</p>";
+}
 function updateProgress() {
   var boxes = el("planOut").getElementsByTagName("input"), total = boxes.length, ticked = 0, i;
   for (i = 0; i < total; i++) if (boxes[i].checked) ticked++;
+  var streak = currentStreak();
+  var sb = el("streakBox");
+  if (sb) {
+    sb.textContent = streak > 0
+      ? "🔥 連續溫習 " + streak + " 日 — " + streak + "-day study streak. 今日已做 " + ticked + " 項,加油!"
+      : "今日未開始 — tick off a session to start your streak.";
+  }
+  renderSubjectProgress();
   if (!total) { el("progText").textContent = "未生成計劃 — No plan yet."; el("progFill").style.width = "0%"; return; }
   el("progText").textContent = "已完成 " + ticked + " / " + total + " 個溫習項目 — " + ticked + " of " + total + " sessions done.";
   el("progFill").style.width = String(Math.round(ticked / total * 100)) + "%";
@@ -334,15 +523,27 @@ el("addSubject").addEventListener("click", function () { addSubject(""); }, fals
 el("loadSample").addEventListener("click", function () {
   el("subjects").innerHTML = "";
   var s1 = addSubject("數學 Maths");
-  addTopic(s1, "三角函數 Trigonometry", 1); addTopic(s1, "微積分 Calculus", 2); addTopic(s1, "概率 Probability", 1);
+  addTopic(s1, "三角函數 Trigonometry", 1, 45); addTopic(s1, "微積分 Calculus", 2, 60); addTopic(s1, "概率 Probability", 1, 30);
   var s2 = addSubject("英文 English");
-  addTopic(s2, "作文 Writing", 2); addTopic(s2, "閱讀理解 Reading", 3); addTopic(s2, "聆聽 Listening", 2);
+  addTopic(s2, "作文 Writing", 2, 45); addTopic(s2, "閱讀理解 Reading", 3, 30); addTopic(s2, "聆聽 Listening", 2, 15);
   updateCountdown();
 }, false);
 el("genPlan").addEventListener("click", renderPlan, false);
 el("exportCsv").addEventListener("click", function () {
   if (!window._lastPlan) { alert("請先生成計劃。Generate the plan first."); return; }
   downloadFile("revision-plan.csv", planToCSV(window._lastPlan), "text/csv;charset=utf-8");
+}, false);
+el("exportTxt").addEventListener("click", function () {
+  if (!window._lastPlan) { alert("請先生成計劃。Generate the plan first."); return; }
+  downloadFile("revision-plan-report.txt",
+    planSummaryText(window._lastPlan, loadDone(), currentStreak(), el("examDate").value),
+    "text/plain;charset=utf-8");
+}, false);
+el("resetProg").addEventListener("click", function () {
+  if (!window.confirm("清除全部已剔進度同連續日數? Clear all ticked progress and the streak?")) return;
+  try { window.localStorage.removeItem(STORE_KEY); } catch (e) {}
+  try { window.localStorage.removeItem(DATES_KEY); } catch (e) {}
+  if (window._lastPlan) renderPlan(); else updateProgress();
 }, false);
 el("printPlan").addEventListener("click", function () { window.print(); }, false);
 el("examDate").addEventListener("change", updateCountdown, false);
